@@ -19,7 +19,7 @@ end
 
 function LinearClassifier(k, n)
     weights = rand(n, k) * 2 - 1; # range is [-1, 1]
-    LinearClassifier(k, n, weights, zeros(k), zeros(n))
+    LinearClassifier(k, n, weights, zeros(k))
 end
 
 function predict(c :: LinearClassifier, x :: Array{Float64})
@@ -31,7 +31,7 @@ function predict!(c :: LinearClassifier, x :: Array{Float64})
     c.outputs = vec(softmax(x * c.weights))
 end
 
-#@iprofile begin
+@iprofile begin
 function train_one(c :: LinearClassifier, x :: Array{Float64}, y :: Int64; α :: Float64 = 0.025, input_gradient :: Union(Nothing, Array{Float64}) = nothing)
     if !in(y, 1 : c.k)
         msg = @sprintf "A sample is discarded because the label y = %d is not in range of 1 to %d" y c.k
@@ -50,7 +50,7 @@ function train_one(c :: LinearClassifier, x :: Array{Float64}, y :: Int64; α ::
     # c.weights -= α * x' * outputs;
     BLAS.ger!(-α, vec(x), c.outputs, c.weights)
 end
-#end
+end
 
 # calculate the overall log likelihood. Mainly used for debugging
 function log_likelihood(c, X, y)
