@@ -56,6 +56,42 @@ function WordEmbedding(dim :: Int64, init_type :: InitializatioinMethod, network
     return WordEmbedding(String[], Dict(), nullnode, Dict(), Dict(), init_type, network_type, dim, lsize, rsize, 0, subsampling);
 end
 
+# now we can start the training
+function work_process(embed :: WordEmbedding, words_stream :: Task)
+    middle = embed.lsize + 1
+    input_gradient = zeros(Float64, embed.dimension)
+    for window in sliding_window(words_stream, lsize = embed.lsize, rsize = embed.rsize)
+        trained_word = window[middle]
+        embed.trained_count += 1
+        if embed.trained_count % 1000 == 0
+            @printf "trained on %d words\n" embed.trained_count
+        end
+        local_lsize = int(rand(Uint64) % embed.lsize)
+        local_rsize = int(rand(Uint64) % embed.rsize)
+        # @printf "lsize: %d, rsize %d\n" local_lsize local_rsize
+        for ind in middle - local_lsize : middle + local_rsize
+            if ind == middle
+                continue
+            end
+            target_word = window[ind]
+            if !haskey(embed.codebook, target_word)
+                # discard words not presenting in the classification tree
+                continue;
+            end
+            # @printf "%s -> %s\n" trained_word target_word
+            node = embed.classification_tree :: TreeNode
+            fill!(input_gradient, 0.0)
+            for code in embed.codebook[target_word]
+                train_one(node.data, embed.embedding[trained_word], code, input_gradient)
+                node = node.children[code]
+            end
+            BLAS.axpy!(embed.dimension, -1.0, vec(input_gradient), 1, vec(embed.embedding[trained_word]), 1)
+        end
+    end
+    @printf "finished training, sending result to the main process\n"
+    embed
+end
+
 function train(embed :: WordEmbedding, corpus_filename :: String)
     fs = open(corpus_filename, "r")
     distribution = Dict{String, Float64}()
@@ -87,41 +123,6 @@ function train(embed :: WordEmbedding, corpus_filename :: String)
         embed.codebook[w] = code
     end
 
-    # now we can start the training
-    function work_process(embed :: WordEmbedding, words_stream)
-        middle = embed.lsize + 1
-        input_gradient = zeros(Float64, embed.dimension)
-        for window in sliding_window(words_stream, lsize = embed.lsize, rsize = embed.rsize)
-            trained_word = window[middle]
-            embed.trained_count += 1
-            if embed.trained_count % 1000 == 0
-                @printf "trained on %d words\n" embed.trained_count
-            end
-            local_lsize = int(rand(Uint64) % embed.lsize)
-            local_rsize = int(rand(Uint64) % embed.rsize)
-            # @printf "lsize: %d, rsize %d\n" local_lsize local_rsize
-            for ind in middle - local_lsize : middle + local_rsize
-                if ind == middle
-                    continue
-                end
-                target_word = window[ind]
-                if !haskey(embed.codebook, target_word)
-                    # discard words not presenting in the classification tree
-                    continue;
-                end
-                # @printf "%s -> %s\n" trained_word target_word
-                node = embed.classification_tree
-                fill!(input_gradient, 0.0)
-                for code in embed.codebook[target_word]
-                    train_one(node.data, embed.embedding[trained_word], code, input_gradient = input_gradient)
-                    node = node.children[code]
-                end
-                BLAS.axpy!(embed.dimension, -1.0, vec(input_gradient), 1, vec(embed.embedding[trained_word]), 1)
-            end
-        end
-        @printf "finished training, sending result to the main process\n"
-        embed
-    end
 
     function reduce_embeds!(embed, embs)
         n = length(embs)
@@ -148,7 +149,7 @@ end
 function initialize_network(embed :: WordEmbedding, huffman :: HuffmanTree)
     heap = PriorityQueue()
     for (word, freq) in embed.distribution
-        node = BranchNode([], word)    # the data field of leaf node is its corresponding word.
+        node = BranchNode([], word, nothing)    # the data field of leaf node is its corresponding word.
         enqueue!(heap, node, freq)
     end
     while length(heap) > 1
@@ -156,10 +157,25 @@ function initialize_network(embed :: WordEmbedding, huffman :: HuffmanTree)
         dequeue!(heap)
         (node2, freq2) = peek(heap)
         dequeue!(heap)
-        newnode = BranchNode([node1, node2], LinearClassifier(2, embed.dimension)) # the data field of internal node is the classifier
+        newnode = BranchNode([node1, node2], LinearClassifier(2, embed.dimension), nothing) # the data field of internal node is the classifier
         enqueue!(heap, newnode, freq1 + freq2)
     end
     embed.classification_tree = dequeue!(heap)
+    embed
+end
+
+function initialize_network(embed :: WordEmbedding, ontology :: OntologyTree)
+    function build_classifiers(node :: TreeNode)
+        l = length(node.children)
+        if l == 0
+            return
+        end
+        node.data = LinearClassifier(l, embed.dimension)
+        for c in node.children
+            build_classifiers(c)
+        end
+    end
+    embed.classification_tree = ontology.ontology
     embed
 end
 

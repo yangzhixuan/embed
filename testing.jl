@@ -34,7 +34,7 @@ function test_softmax()
 
     @printf "Start training...\n"
     c = LinearClassifier(10, 784)
-    @time train_parallel(c, X_train, y_train, max_iter = 50)
+    @time train_parallel(c, X_train, y_train, max_iter = 10)
     @printf "Accuracy on test set %f (a value around 0.9 is expected)\n" accuracy(c, X_test, y_test)
 end
 

@@ -1,4 +1,5 @@
 using Iterators
+using LightXML
 
 function words_of(fp :: IOStream; subsampling = (0, nothing), startpoint = -1, endpoint = -1)
     if startpoint >= 0
@@ -91,8 +92,9 @@ end
 
 abstract TreeNode
 type BranchNode <: TreeNode
-    children :: Array{TreeNode, 1}
+    children :: Array{BranchNode, 1}
     data
+    extrainfo
 end
 type NullNode <: TreeNode
 end
@@ -125,4 +127,16 @@ function partition{T}(a :: Array{T}, n :: Integer)
         cursor += t
     end
     b
+end
+
+function read_ontology(filename :: String)
+    xdoc = parse_file(filename)
+    function build_tree(node :: XMLElement)
+        if name(node) == "word"
+            return BranchNode([], content(node), nothing)
+        else
+            return BranchNode(map(build_tree, child_elements(node)), nothing, nothing)
+        end
+    end
+    build_tree(root(xdoc))
 end

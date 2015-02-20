@@ -12,7 +12,7 @@ using IProfile
 type LinearClassifier
     k :: Int64 # number of outputs
     n :: Int64 # number of inputs
-    weights :: Array{Float64, 2} # k * n weight matrix
+    weights :: Array{Float64, 2} # n * k weight matrix
 
     outputs :: Vector{Float64}
 end
@@ -28,28 +28,61 @@ function predict(c :: LinearClassifier, x :: Array{Float64})
 end
 
 function predict!(c :: LinearClassifier, x :: Array{Float64})
-    c.outputs = vec(softmax(x * c.weights))
+    # c.outputs = vec(softmax(x * c.weights))
+    for i in 1:c.k
+        c.outputs[i] = 0
+        for j in 1:c.n
+            c.outputs[i] += x[j] * c.weights[j, i]
+        end
+    end
+
+    softmax!(c.outputs, c.outputs);
 end
 
-@iprofile begin
-function train_one(c :: LinearClassifier, x :: Array{Float64}, y :: Int64; α :: Float64 = 0.025, input_gradient :: Union(Nothing, Array{Float64}) = nothing)
-    if !in(y, 1 : c.k)
-        msg = @sprintf "A sample is discarded because the label y = %d is not in range of 1 to %d" y c.k
-        warn(msg)
-        return
-    end
+function train_one(c :: LinearClassifier, x :: Array{Float64}, y :: Int64, α :: Float64 = 0.025)
+    # if !in(y, 1 : c.k)
+    #     msg = @sprintf "A sample is discarded because the label y = %d is not in range of 1 to %d" y c.k
+    #     warn(msg)
+    #     return
+    # end
 
     predict!(c, x)
     c.outputs[y] -= 1
 
-    if input_gradient != nothing
-        # input_gradient = ( c.weights * outputs' )'
-        BLAS.gemv!('N', α, c.weights, c.outputs, 1.0, input_gradient)
+    # c.weights -= α * x' * outputs;
+    # BLAS.ger!(-α, vec(x), c.outputs, c.weights)
+    for i in 1:c.k
+        for j in 1:c.n
+            c.weights[j, i] -= α * x[j] * c.outputs[i]
+        end
+    end
+end
+
+function train_one(c :: LinearClassifier, x :: Array{Float64}, y :: Int64, input_gradient :: Array{Float64}, α :: Float64 = 0.025)
+    # if !in(y, 1 : c.k)
+    #     msg = @sprintf "A sample is discarded because the label y = %d is not in range of 1 to %d" y c.k
+    #     warn(msg)
+    #     return
+    # end
+
+    predict!(c, x)
+    c.outputs[y] -= 1
+
+    # input_gradient = ( c.weights * outputs' )'
+    # BLAS.gemv!('N', α, c.weights, c.outputs, 1.0, input_gradient)
+    for i in 1:c.k
+        for j in 1:c.n
+            input_gradient[j] += α * c.weights[j, i]
+        end
     end
 
     # c.weights -= α * x' * outputs;
-    BLAS.ger!(-α, vec(x), c.outputs, c.weights)
-end
+    # BLAS.ger!(-α, vec(x), c.outputs, c.weights)
+    for i in 1:c.k
+        for j in 1:c.n
+            c.weights[j, i] -= α * x[j] * c.outputs[i]
+        end
+    end
 end
 
 # calculate the overall log likelihood. Mainly used for debugging
