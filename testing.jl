@@ -40,6 +40,12 @@ end
 
 function test_word_embedding()
     embed = WordEmbedding(30, random_inited, huffman_tree, subsampling = 0)
+    @time train(embed, "text8_small")
+    embed
+end
+
+function test_word_embedding_tiny()
+    embed = WordEmbedding(30, random_inited, huffman_tree, subsampling = 0)
     @time train(embed, "text8_tiny")
     embed
 end

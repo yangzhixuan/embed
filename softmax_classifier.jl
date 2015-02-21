@@ -29,11 +29,13 @@ end
 
 function predict!(c :: LinearClassifier, x :: Array{Float64})
     # c.outputs = vec(softmax(x * c.weights))
+    s = 0.0
     for i in 1:c.k
-        c.outputs[i] = 0
+        s = 0.0
         for j in 1:c.n
-            c.outputs[i] += x[j] * c.weights[j, i]
+            s += x[j] * c.weights[j, i]
         end
+        c.outputs[i] = s
     end
 
     softmax!(c.outputs, c.outputs);
@@ -51,36 +53,66 @@ function train_one(c :: LinearClassifier, x :: Array{Float64}, y :: Int64, α ::
 
     # c.weights -= α * x' * outputs;
     # BLAS.ger!(-α, vec(x), c.outputs, c.weights)
+    m = 0.0
+    j = 0
+    limit = c.n - 4
     for i in 1:c.k
-        for j in 1:c.n
-            c.weights[j, i] -= α * x[j] * c.outputs[i]
+        m = α * c.outputs[i]
+        j = 1
+        while j <= limit
+            c.weights[j, i] -= m * x[j]
+            c.weights[j+1, i] -= m * x[j+1]
+            c.weights[j+2, i] -= m * x[j+2]
+            c.weights[j+3, i] -= m * x[j+3]
+            j+=4
+        end
+        while j <= c.n
+            c.weights[j, i] -= m * x[j]
+            j+=1
         end
     end
 end
 
 function train_one(c :: LinearClassifier, x :: Array{Float64}, y :: Int64, input_gradient :: Array{Float64}, α :: Float64 = 0.025)
-    # if !in(y, 1 : c.k)
-    #     msg = @sprintf "A sample is discarded because the label y = %d is not in range of 1 to %d" y c.k
-    #     warn(msg)
-    #     return
-    # end
-
     predict!(c, x)
     c.outputs[y] -= 1
 
     # input_gradient = ( c.weights * outputs' )'
     # BLAS.gemv!('N', α, c.weights, c.outputs, 1.0, input_gradient)
+    m = 0.0
+    j = 0
+    limit = c.n - 4
     for i in 1:c.k
-        for j in 1:c.n
-            input_gradient[j] += α * c.weights[j, i]
+        m = α * c.outputs[i]
+        j = 1
+        while j <= limit
+            input_gradient[j] += m * c.weights[j, i]
+            input_gradient[j+1] += m * c.weights[j+1, i]
+            input_gradient[j+2] += m * c.weights[j+2, i]
+            input_gradient[j+3] += m * c.weights[j+3, i]
+            j+=4
+        end
+        while j <= c.n
+            input_gradient[j] += m * c.weights[j, i]
+            j+=1
         end
     end
 
     # c.weights -= α * x' * outputs;
     # BLAS.ger!(-α, vec(x), c.outputs, c.weights)
     for i in 1:c.k
-        for j in 1:c.n
-            c.weights[j, i] -= α * x[j] * c.outputs[i]
+        m = α * c.outputs[i]
+        j = 1
+        while j <= limit
+            c.weights[j, i] -= m * x[j]
+            c.weights[j+1, i] -= m * x[j+1]
+            c.weights[j+2, i] -= m * x[j+2]
+            c.weights[j+3, i] -= m * x[j+3]
+            j+=4
+        end
+        while j <= c.n
+            c.weights[j, i] -= m * x[j]
+            j+=1
         end
     end
 end

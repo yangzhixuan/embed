@@ -25,7 +25,7 @@ end
 type HuffmanTree <: NetworkType
     # Predicate step by step on the huffman tree
 end
-type OntologyTree
+type OntologyTree <: NetworkType
     # Predicate step by step on the ontology tree
     ontology :: TreeNode
 end
@@ -122,7 +122,6 @@ function train(embed :: WordEmbedding, corpus_filename :: String)
     for (w, code) in leaves_of(embed.classification_tree)
         embed.codebook[w] = code
     end
-
 
     function reduce_embeds!(embed, embs)
         n = length(embs)
