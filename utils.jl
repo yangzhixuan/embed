@@ -1,93 +1,109 @@
 using Iterators
 using LightXML
 
-function words_of(fp :: IOStream; subsampling = (0, nothing), startpoint = -1, endpoint = -1)
-    if startpoint >= 0
-        seek(fp, startpoint)
+type WordStream
+    fp :: Union(IOStream, String)
+    startpoint :: Int64
+    endpoint :: Int64
+    buffer :: IOBuffer
+
+    # filter configuration
+    rate :: Float64   # if rate > 0, words will be subsampled according to distr
+    filter :: Bool    # if filter is true, only words present in the keys(distr) will be considered
+    distr :: Dict{String, Float64}
+end
+
+function words_of(file :: Union(IOStream, String); subsampling = (0, false, nothing), startpoint = -1, endpoint = -1)
+    rate, filter, distr = subsampling
+    WordStream(file, startpoint, endpoint, IOBuffer(), rate, filter, rate == 0 && !filter ? Dict() : distr)
+end
+
+function parallel_words_of(filename :: String, num_workers :: Integer; subsampling = (0, false, nothing))
+     fp = open(filename, "r")
+     seekend(fp)
+     flen = position(fp)
+     close(fp)
+ 
+     per_len = int(floor(flen / num_workers))
+     cursor = 0
+     res = cell(num_workers)
+     for i in 1:num_workers
+         last = (i == num_workers ? flen - 1 : cursor + per_len - 1)
+         res[i] = words_of(filename, subsampling = subsampling, startpoint = cursor, endpoint = last)
+         cursor += per_len
+     end
+     res
+end
+
+function Base.start(ws :: WordStream)
+    if isa(ws.fp, String)
+        ws.fp = open(ws.fp)
     end
-    (rate, distr) = subsampling
-    function producer()
-        out = IOBuffer()
-        while !eof(fp)
-            if endpoint >= 0 && position(fp) > endpoint
-                break
+    if ws.startpoint >= 0
+        seek(ws.fp, ws.startpoint)
+    else
+        ws.startpoint = 0
+        seekend(ws.fp)
+        ws.endpoint = position(ws.fp)
+        seekstart(ws.fp)
+    end
+    nothing
+end
+
+function Base.done(ws :: WordStream, state)
+    while !eof(ws.fp)
+        if ws.endpoint >= 0 && position(ws.fp) > ws.endpoint
+            break
+        end
+        c = read(ws.fp, Char)
+        if c == ' ' || c == '\n' || c == '\0' || c == '\r'
+            s = takebuf_string(ws.buffer)
+            if s == "" || (ws.filter && !haskey(ws.distr, s))
+                continue
             end
-            c = read(fp, Char)
-            if c == ' ' || c == '\n'
-                s = takebuf_string(out)
-                if s != ""
-                    if rate > 0 && haskey(distr, s)
-                        prob = (sqrt(distr[s] / rate) + 1) * rate / distr[s]
-                        if(prob < rand())
-                            # @printf "throw %s, prob is %f\n" s prob
-                            continue;
-                        end
-                    end
-                    produce(s)
+            if ws.rate > 0
+                prob = (sqrt(ws.distr[s] / ws.rate) + 1) * ws.rate / ws.distr[s]
+                if(prob < rand())
+                    # @printf "throw %s, prob is %f\n" s prob
+                    continue;
                 end
-            else
-                write(out, c)
             end
+            write(ws.buffer, s)
+            return false
+        else
+            write(ws.buffer, c)
         end
     end
-    return Task(producer)
+    #close(ws.fp)
+    return true
 end
 
-function words_of(filename :: String; subsampling = (0, nothing), startpoint = -1, endpoint = -1)
-    function wrapper()
-        fp = open(filename, "r")
-        t = words_of(fp, subsampling = subsampling, startpoint = startpoint, endpoint = endpoint)
-        while !istaskdone(t)
-            res = consume(t)
-            if res == () && istaskdone(t)
-                break
-            end
-            produce(res)
-        end
-        close(fp)
-    end
-    Task(wrapper)
+function Base.next(ws :: WordStream, state)
+    (takebuf_string(ws.buffer), nothing)
 end
 
+type SlidingWindow
+    ws :: WordStream
+    lsize :: Int64
+    rsize :: Int64
+end
 
-function parallel_words_of(filename :: String, num_workers :: Integer; subsampling = (0, nothing))
-    fp = open(filename, "r")
-    seekend(fp)
-    flen = position(fp)
-    close(fp)
+function Base.start(window :: SlidingWindow)
+    convert(Array{String, 1}, collect(take(window.ws, window.lsize + 1 + window.rsize)))
+end
 
-    per_len = int(floor(flen / num_workers))
-    cursor = 0
-    res = cell(num_workers)
-    for i in 1:num_workers
-        last = (i == num_workers ? flen - 1 : cursor + per_len - 1)
-        res[i] = words_of(filename, subsampling = subsampling, startpoint = cursor, endpoint = last)
-        cursor += per_len
-    end
-    res
+function Base.done(window :: SlidingWindow, w :: Array{String})
+    done(window.ws, nothing)
+end
+
+function Base.next(window :: SlidingWindow, w :: Array{String})
+    shift!(w)
+    push!(w, next(window.ws, nothing)[1])
+    (w, w)
 end
 
 function sliding_window(words; lsize = 5, rsize = 5)
-    size = lsize + 1 + rsize
-
-    function producer()
-        # initialize the window
-        window = collect(take(words, size))
-        if length(window) != size
-            return
-        end
-        produce(window)
-
-        # move the window (notice that we don't need to drop the first window-size items
-        # of the words iterator because it is a producer-consumer Task iterator, not a 
-        # stream-like functional iterator)
-        for w in words
-            shift!(window)
-            push!(window, w)
-            produce(window)
-       end
-    end
-    return Task(producer)
+    SlidingWindow(words, lsize, rsize)
 end
 
 abstract TreeNode
@@ -118,6 +134,21 @@ function leaves_of(root :: TreeNode)
     Task(() -> traverse(root))
 end
 
+function internal_nodes_of(root :: TreeNode)
+    function traverse(node :: TreeNode)
+        if node == nullnode
+            return
+        end
+        if length(node.children) != 0
+            produce(node)
+        end
+        for child in node.children
+            traverse(child)
+        end
+    end
+    Task(() -> traverse(root))
+end
+
 function partition{T}(a :: Array{T}, n :: Integer)
     b = Array{T}[]
     t = int(floor(length(a) / n))
@@ -129,14 +160,32 @@ function partition{T}(a :: Array{T}, n :: Integer)
     b
 end
 
-function read_ontology(filename :: String)
-    xdoc = parse_file(filename)
-    function build_tree(node :: XMLElement)
-        if name(node) == "word"
-            return BranchNode([], content(node), nothing)
-        else
-            return BranchNode(map(build_tree, child_elements(node)), nothing, nothing)
+function read_word2vec_txt(fname :: String)
+    lines = readlines(open(fname))
+    dim = int(split(lines[1], " ")[2])
+    emb = WordEmbedding(dim, random_inited, huffman_tree)
+
+    for l in lines[2:end]
+        splitted = split(strip(l), " ")
+        a = zeros(1, dim)
+        for (ind, field) in enumerate(splitted[2:end])
+            try 
+                a[ind] = float(field)
+            catch err
+                @printf "invalid float: %s\n" field
+            end
         end
+        emb.embedding[splitted[1]] = a
     end
-    build_tree(root(xdoc))
+    emb
+end
+
+
+function average_height(tree :: TreeNode)
+    (h, c) = (0, 0)
+    for (_, path) in leaves_of(tree)
+        h += length(path)
+        c += 1
+    end
+    h / c
 end
